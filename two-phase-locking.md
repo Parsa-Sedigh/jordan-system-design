@@ -76,7 +76,8 @@ The issue with predicate locks is that they're slow to run. Because we have to e
 and if there's not an index that corresponds with this query, this could be very slow to run.
 
 ### Index range locking
-Take advantage of table index to grab **more(superset)** predicate locks than necessary.
+Take advantage of table index to grab **more(superset)** predicate locks than necessary. So sometimes it's faster to lock a superset of the rows,
+so we're locking more than necessary because running the query to figure out which rows to lock, is a little bit faster.
 
 Let's say we want to lock the rows that fit this condition: `where class_name = 'flexibility and class_time = 6` but we only have an index
 on class_name. So index of querying with the mentioned condition which has a column that doesn't have an index, we search the rows
