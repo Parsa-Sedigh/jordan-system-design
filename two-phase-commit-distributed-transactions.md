@@ -76,3 +76,16 @@ how you shard your data or possibly even improving your data locality with sth l
 allow us to generally be able to avoid these types of cross partition writes.
 
 Note: While 2PC can be improved(we can do that with distributed consensus), it's sth that generally you want to avoid.
+
+## 3PC and saga
+It's also worth mentioning three phase commit. In a three phase commit, instead of just sending messages to our participant nodes twice,
+we add a middle stage called "**prepare to commit**" which the coordinator sends out after all the participants respond "OK" in the prepare stage.
+Now, if the coordinator goes down in the last stage of 3PC, the participant nodes can query one another and see that **at least**
+one node had "prepare to commit" status, meaning that they should all commit the transaction.  If they decide together (probably
+requires distributed consensus) that none of them had "prepared to commit" status, they can then abort the transaction.  Now, 
+in the event that a coordinator node goes down, we can actually recover.  Note that if a participant goes down, we still need to 
+keep trying to write to it forever.
+
+Saga commits seem to be a bit of a different thing, and the concept is more so that instead of attempting to write to many 
+nodes **at once**, write them one at a time, and if some of the writes fail, attempt to perform a separate "compensating transaction" 
+in order to revert that write and bring the database back to its old state. Obviously here you run the risk of that revert failing.
