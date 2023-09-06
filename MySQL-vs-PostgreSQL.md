@@ -20,6 +20,7 @@ that you're directly reading and writing. In contrast to an LSM tree(on the left
 tree plus a bunch of tables on disk, reads in theory on B-Tree indexes should a little bit faster because in B-tree, we eliminate a whole
 branch and we go to read the node we want to, as opposed to an LSM tree based table where we first check the in-memory tree, then check the
 on-disk tables(those 3 tables in img).
+![](./img/MySQL-vs-PostgreSQL/1.png)
 
 So reads in B-Tree indexes could be faster but writes to B-tree are worse than LSM.
 
@@ -44,8 +45,7 @@ mysql: uses two phase locking                           postgresSQL: uses serial
 - every row has locks                                   - transactions read from data snapshots
 - read-only transactions can grab in shared mode        - if transactions reads value which is modified by another transaction before
 - to write, must grab the lock in exclusive mode        committing, original needs to be rolled back. 
-- lots of deadlocks to detect and undo                  
-                                                        
+- lots of deadlocks to detect and undo                   
 
 As we saw, reads in mysql are a little bit more optimized than writes.
 
