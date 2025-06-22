@@ -187,7 +187,7 @@ Now if the preferred node comes back up and that other node goes down, we move t
 ### Kafka replication vs quorum
 The distinction of quorom based replication vs kafka replication approach(in-sync replica approach)
 
-quorum based approach:
+#### quorum based approach:
 
 The replicas that need to acknowledge a given write for it to be considered committed, needs to also overlap with the set of replicas
 that would be able to vote for potential candidate for becoming the leader(in case of fail-over). With this, we know that
@@ -196,7 +196,8 @@ one of those replicas is always gonna have all of the committed writes on it. In
 - a **majority** of nodes must have the msg for it to be considered committed
 - on failover, a majority of nodes must vote for next leader to avoid data loss
 
-in-sync-replica approach:
+#### in-sync-replica approach:
+
 - **all** in-sync replicas must have the msg for it to be committed
 - on failover, choose **any** of the in-sync replicas
 
