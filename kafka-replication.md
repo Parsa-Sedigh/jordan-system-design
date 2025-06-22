@@ -27,13 +27,13 @@ About 4: So you can set up a producer to consider a msg successfully produced wh
 **see** a msg, the msg has to be replicated to **all** in-sync replicas(only the leader is not enough).
 
 Since the number of in-sync replica set can grow or shrink, there's `min-insync.replicas` setting on producer and with this, we can say:
-if there's only 1 in-sync replica running, by setting this setting to num higher than 1, we say: msgs are not still even written to the leader,
-even though they were acked by that one running in-sync replica. So consumers of that topic can't see those msgs yet
-until more in-sync replicas ack that msg.
+if there's only 1 in-sync replica running, by setting this setting to num higher than 1, we say: msgs are not written to any broker,
+even though they were acked by that one running in-sync replica.
+So consumers of that topic can't see those msgs yet until more in-sync replicas ack that msg.
 
 Q: Why in-sync replica set can grow and shrink?
 
-A: It can shrink when an in-sync replica set is slow because that's gonna stop us from processing any new msgs if current num of available
+A: It can shrink when an in-sync replica set is slow because that's gonna stop us from processing any new msgs if current num of **available**
 in-sync replicas gets smaller than `min.insync.replicas`.
 
 > A message is considered committed when:
@@ -42,9 +42,9 @@ in-sync replicas gets smaller than `min.insync.replicas`.
 ### In-sync replicas
 - each partition maintains a list of "in-sync" replicas in zookeeper.
 - Messages must be written to the leader + replicated to all in-sync replicas (ISRs) in order to be considered committed. This means we're bottle necked by the
-slowest of the in-sync replicas. For example one of them could have network issue or hardware or maybe it has a lot of load on it,
+slowest of the in-sync replicas. For example, one of them could have network issue or hardware or maybe it has a lot of load on it,
 issue and is unable to process msgs. This can be really bad. However, we can kick in-sync replicas from the set. 
-Also not that, in-sync replicas can return to the in-sync set when they catch back up!
+Also note that, in-sync replicas can return to the in-sync set when they catch back up!
 - if the leader of a partition fails, what we can fail over(fall over) to, has to be an in-sync replica.
 You can tell this by the name of **in-sync** replica. Every single in-sync replica is completely up to date with the leader partition.
 You might say: "when we write a msg to the leader, it may have a few more msgs than some of the in-sync replicas. So they're not in-sync, right?"
@@ -86,9 +86,9 @@ If for whatever reason the bottom replica were to fall out of the in-sync-replic
 
 In kafka, followers pull the leader in the same way that a consumer might pull from broker.
 
-**High watermark:** The minimum of known offsets of #`min.insync.replicas` in-sync-replicas. It allows us to tell which msgs are committed. So any msgs
-before the high watermark are considered committed and anything after, is considered not committed, because they haven't acked by
-`min.insync.replicas` number of ISRs.
+**High watermark:** lowest offset that **all** ISRs have replicated — not just replicated to #`min.insync.replicas`.
+It allows us to tell which msgs are committed. So any msgs before the high watermark are considered committed and anything after, 
+is considered not committed.
 
 In img, the min of F1(follower1) and F2 is high water mark which currently is msg `c`.
 
@@ -102,7 +102,7 @@ When we failover to a new leader, it's gonna get an incremented epoch num.
 ![](img/kafka-replication/1.png)
 
 #### Stale high watermark
-Since a follower is async, it's conception of high watermark(what #min.insync.replicas agree as committed) is a bit behind.
+Since a follower is async, it's conception of high watermark is a bit behind.
 
 The reason is: When the follower reqs new msgs to get replicated to it from the leader, the leader is sending it's high watermark.
 
@@ -113,36 +113,68 @@ So it has a stale high watermark.
 
 Note: Whenever we elect a new leader, we bump the epoch number by 1. So epoch number acts as a fencing token.
 
-Epoch numbers are useful for:
-1. if for whatever reason a leader that was down, comes online, its not gonna be able to keep writing, because it would have a lower epoch number.
-2. msgs of the leader that went down and then comes back online, could be overwritten because of having lower epoch number. The new leader
-won't accept this msgs because of them having lower epoch number(fencing token)
+Leader epochs prevent stale leaders from writing.
+
+When a broker is elected leader, it receives a monotonically increasing epoch. If the prior leader recovers later, it holds an old epoch.
+Kafka uses this epoch as a fencing token: all writes to an outdated leader with lower epoch are immediately rejected. 
+This guarantees that only the current, valid leader can accept writes and protects data integrity.
 
 ### Kafka replication optimizations
-- kafka does not require that each replica flush it's log msgs to disk
-  - keeping msgs buffered in memory leads to big perf improvements
-- another configuration that you can do: If all brokers in the ISR go down, the cluster becomes unavailable for that partition,
-and no new data can be committed. However, committed data is not necessarily lost, assuming brokers recover with their data intact. 
-Kafka allows you to choose between 2 opts(availability vs. consistency trade-off):
-  - come back only when an ISR broker returns(no data loss, could take longer). This reflects Kafka’s safe behavior when
-  `unclean.leader.election.enable=false` (the default in modern Kafka versions).
-  - come back up if any broker returns(possible data loss, less down time). This describes unclean leader election (`unclean.leader.election.enable=true`), 
-  where Kafka may elect a non-ISR broker as leader, which might not have the latest committed data.
-- on startup, kafka tries to balance leader partitions across brokers
-  - these brokers per partition are called the "preferred node"
-  - if a topic partition leader fails, try to move it back to the preferred node if possible
-- when a broker goes down, we have to send out multiple topic notifications to other brokers in the cluster for alerting them
-of topics that their leader becomes that broker. In this case, we can batch the msgs to make it efficient.
+Kafka does not require that each replica flush it's log msgs to disk. Keeping msgs buffered in memory leads to big perf improvements
+
+---
+
+Another configuration that you can do: If all brokers in the ISR go down, that partition becomes unavailable and 
+no new data can be committed. However, previously committed data is not lost if the brokers recover with their logs intact.
+
+For this situation, kafka supports two operational modes, reflecting a trade-off between availability and consistency:
+1. Safe mode (default): The partition will only recover when an ISR broker comes back online—ensuring no data loss,
+though it may remain unavailable longer. This is the behavior when `unclean.leader.election.enable=false` (the default in modern Kafka versions).  ￼ ￼
+2. Unclean leader election: If any broker returns — even one not in the ISR—the partition recovers faster, but at the risk of data loss.
+This occurs when `unclean.leader.election.enable=true`, allowing non-ISR replicas to become leader and potentially miss committed messages.
+
+If we pick the first option, we get consistency(because an ISR replica which is in-sync with the down leader, is chosen as the new leader).
+But if we chose option 2, we get availability and might lose data, because we could elect a non-in-sync-replica as the new leader.
+
+---
 
 About 1: Typically it is assumed in a replication protocol that every single msg that we write to every node is gonna be written to disk
 because it needs to be durable, so even after restart, we still have them. But in kafka, they don't do that because it's a huge perf killer.
 They'd rather buffer msgs. This decreases the durability. Also note that in reality there are a lot of disk failures and so
-actually having data on disk is not as durable as it seems.
+actually having data on disk is not as durable as it seems. In other words:
 
-About 2: If we pick the first option, we get consistency(because an ISR replica which is in-sync with the down leader, is chosen as the new leader).
-But if we chose option 2, we get availability and might lose data, because we could elect a non-in-sync-replica as the new leader.
+> Kafka sacrifices immediate local durability by default to achieve massive throughput, buffering writes in memory and 
+deferring disk flushes.
 
-> Note: We want the leader partition(replica) of every topic to be equally spread out across the nodes in our cluster. 
+Q: Does this mean kafka is not durable after acking the producer?
+
+A: Kafka does not fsync to disk before acknowledging writes. It simply writes to the OS page cache, which typically occurs quickly.
+Therefore, if a broker crashes (e.g., via power loss) before the OS flushes to disk, even an acknowledged message can be lost.
+
+Bottom line: Kafka acks based on in-memory writes, not on disk persistence.
+
+Durability through replication:
+
+Kafka’s safety mechanism isn’t local disk flushes—it’s replication across in-sync replicas (ISRs). 
+With `acks=all` (or -1) and `min.insync.replicas > 1`, Kafka waits for multiple brokers to receive the message.
+Even if one node crashes before flushing, others may still have changed their page cache and can recover the data
+
+In rare cases, “committed” messages can still be lost:
+
+Although unlikely, data loss is possible if all in-sync replicas crash simultaneously before flushing to disk. 
+For example, a power failure across the cluster before page cache flushes could wipe acknowledged data .
+
+With proper replication (`acks=all` + `min.insync.replicas`) and multi-zone deployment, such events are extremely unlikely.
+
+---
+
+On startup, Kafka attempts to balance partition leadership across brokers.
+
+- Each partition’s preferred leader is the replica listed first in its replica list.
+- Kafka periodically checks and, when needed, moves partition leadership back to the preferred replica — this behavior is
+  governed by `auto.leader.rebalance.enable=true` (default) and `leader.imbalance.per.broker.percentage` thresholds.
+
+> Note: We want the leader partition of every topic to be equally spread out across the nodes in our cluster. 
 Kafka controller balances the leader replica(partition) to be across different brokers.
 For example, if we have 4 different nodes and maybe 16 topics, each node will be the leader of 4 topics. So we can spread the leaders
 in round-robin way.
@@ -182,7 +214,7 @@ Latency in quorom systems are not bottlenecked by the slowest nodes, but if a ma
 In-sync replica sets are dynamic, evicting the slowest nodes and can tolerate all but one in-sync replica failing.
 
 ### Conclusion
-Bu tuning kafka parameters, we can achieve full replication of msgs! In practice, it's very unlikely that all replicas go down.
+By tuning kafka parameters, we can achieve full replication of msgs! In practice, it's very unlikely that all replicas go down.
 
 At the end of the day, kafka doesn't provide strong consistency since all the replicas can go down, but it's pretty close.
 
